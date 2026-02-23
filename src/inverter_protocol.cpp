@@ -1,10 +1,35 @@
 #include "inverter_protocol.h"
 
 InverterProtocol::InverterProtocol() {
-  setF020AllFF();
-  f023_ = 0xFF;
-  f213_ = 0xFF;
+  // Defaults: stopped + FFs
+  memset(f020_, 0xFF, sizeof(f020_));
+  f020_[0] = 0x02; // stopped
+  f020_[1] = 0x00; // change counter
+
+  f023_ = 0x00;
+  f213_ = 0x00;
   f026_ = 0x00;
+}
+
+void InverterProtocol::enableHeartbeatLed(bool enable, int pin, bool active_high) {
+  hb_led_enabled_ = enable;
+  hb_led_pin_ = pin;
+  hb_led_active_high_ = active_high;
+
+  if (hb_led_enabled_) {
+    pinMode(hb_led_pin_, OUTPUT);
+    hb_led_state_ = false;
+    digitalWrite(hb_led_pin_, hb_led_active_high_ ? LOW : HIGH);
+  }
+}
+
+void InverterProtocol::toggleHeartbeatLed_() {
+  if (!hb_led_enabled_) return;
+  hb_led_state_ = !hb_led_state_;
+  const int level = hb_led_state_
+                      ? (hb_led_active_high_ ? HIGH : LOW)
+                      : (hb_led_active_high_ ? LOW : HIGH);
+  digitalWrite(hb_led_pin_, level);
 }
 
 void InverterProtocol::begin(tiny_timer_group_t* /*timers*/,
@@ -14,7 +39,6 @@ void InverterProtocol::begin(tiny_timer_group_t* /*timers*/,
   src_addr_ = src_addr;
   dst_addr_ = dst_addr;
 
-  // Your installed tiny-gea-api DOES NOT take timers here.
   tiny_gea3_interface_init(
     &gea3_,
     uart,
@@ -30,6 +54,7 @@ void InverterProtocol::begin(tiny_timer_group_t* /*timers*/,
 
   last_500ms_ms_ = millis();
   last_1s_ms_ = millis();
+  last_rx_ms_ = millis();
 }
 
 void InverterProtocol::setAddresses(uint8_t src, uint8_t dst) {
@@ -44,44 +69,128 @@ void InverterProtocol::setEnabled(bool en) {
   last_1s_ms_ = millis();
 }
 
-bool InverterProtocol::setParam(uint8_t index, uint16_t value) {
-  if (index >= 36) return false;
-  f020_.fields.params[index] = value;
+bool InverterProtocol::consumeTelemetryUpdated() {
+  if (!telem_dirty_) return false;
+  telem_dirty_ = false;
   return true;
 }
 
-void InverterProtocol::setF020AllFF() {
-  memset(f020_.raw, 0xFF, sizeof(f020_.raw));
+uint32_t InverterProtocol::msSinceLastRx() const {
+  return (uint32_t)(millis() - last_rx_ms_);
 }
 
-void InverterProtocol::enableHeartbeatLed(bool enable, int pin, bool active_high) {
-  hb_led_enabled_ = enable;
-  hb_led_pin_ = pin;
-  hb_led_active_high_ = active_high;
+// -----------------------------
+// F020 mutation helper
+// -----------------------------
+void InverterProtocol::updateF020Range_(uint8_t index, const uint8_t* data, size_t len) {
+  if (!data || len == 0) return;
+  if (index >= F020_LEN) return;
+  if ((size_t)index + len > F020_LEN) return;
 
-  if (hb_led_enabled_) {
-    pinMode(hb_led_pin_, OUTPUT);
-    hb_led_state_ = false;
-    digitalWrite(hb_led_pin_, hb_led_active_high_ ? LOW : HIGH); // LED off initially
+  bool changed = false;
+  for (size_t i = 0; i < len; i++) {
+    uint8_t idx = (uint8_t)(index + i);
+    if (idx == 1) continue; // ignore counter
+    if (f020_[idx] != data[i]) { changed = true; break; }
+  }
+  if (!changed) return;
+
+  // bump counter once per logical change
+  f020_[1] = (uint8_t)(f020_[1] + 1);
+
+  for (size_t i = 0; i < len; i++) {
+    uint8_t idx = (uint8_t)(index + i);
+    if (idx == 1) continue;
+    f020_[idx] = data[i];
   }
 }
 
-void InverterProtocol::toggleHeartbeatLed_() {
-  if (!hb_led_enabled_) return;
-
-  hb_led_state_ = !hb_led_state_;
-  const int level = hb_led_state_
-                      ? (hb_led_active_high_ ? HIGH : LOW)
-                      : (hb_led_active_high_ ? LOW : HIGH);
-  digitalWrite(hb_led_pin_, level);
+void InverterProtocol::setRun(bool running) {
+  setRunByte(running ? 0x04 : 0x02);
 }
 
+void InverterProtocol::setRunByte(uint8_t v) {
+  if (v != 0x02 && v != 0x04) return;
+  updateF020Range_(0, &v, 1);
+}
+
+void InverterProtocol::setAccel(uint16_t accel_u16) {
+  uint8_t b[2];
+  put_u16_be(b, accel_u16);
+  updateF020Range_(4, b, 2);
+}
+
+void InverterProtocol::setSpeedSigned(int16_t speed_s16) {
+  uint8_t b[2];
+  put_u16_be(b, (uint16_t)speed_s16);
+  updateF020Range_(6, b, 2);
+}
+
+bool InverterProtocol::setParam(uint8_t index, uint16_t value) {
+  // Params are u16 words starting at byte 8
+  if (index >= 36) return false;
+  uint8_t b[2];
+  put_u16_be(b, value);
+  uint8_t off = (uint8_t)(8 + (index * 2));
+  updateF020Range_(off, b, 2);
+  return true;
+}
+
+bool InverterProtocol::setF020Byte(uint8_t index, uint8_t value) {
+  if (index >= F020_LEN) return false;
+  if (index == 1) return false;
+  updateF020Range_(index, &value, 1);
+  return true;
+}
+
+void InverterProtocol::setF020DefaultsStopped() {
+  // target: byte0=0x02, byte2..end=0xFF, accel/speed implicitly 0xFFFF
+  uint8_t target[F020_LEN];
+  memset(target, 0xFF, sizeof(target));
+  target[0] = 0x02;
+  // target[1] ignored
+
+  bool diff = false;
+  for (size_t i = 0; i < F020_LEN; i++) {
+    if (i == 1) continue;
+    if (f020_[i] != target[i]) { diff = true; break; }
+  }
+  if (!diff) return;
+
+  // bump counter once
+  f020_[1] = (uint8_t)(f020_[1] + 1);
+  // apply
+  for (size_t i = 0; i < F020_LEN; i++) {
+    if (i == 1) continue;
+    f020_[i] = target[i];
+  }
+}
+
+void InverterProtocol::setF020AllFF() {
+  bool diff = false;
+  for (size_t i = 0; i < F020_LEN; i++) {
+    if (i == 1) continue;
+    if (f020_[i] != 0xFF) { diff = true; break; }
+  }
+  if (!diff) return;
+
+  f020_[1] = (uint8_t)(f020_[1] + 1);
+  for (size_t i = 0; i < F020_LEN; i++) {
+    if (i == 1) continue;
+    f020_[i] = 0xFF;
+  }
+}
+
+// -----------------------------
+// Main run / send / parse
+// -----------------------------
 void InverterProtocol::run() {
   tiny_gea3_interface_run(&gea3_);
 
   const uint32_t now = millis();
 
-  if (enabled_ && (uint32_t)(now - last_1s_ms_) >= 1000) {
+  // Heartbeat reflects link alive
+  if ((uint32_t)(now - last_1s_ms_) >= 1000) {
     last_1s_ms_ = now;
     f026_++;
     toggleHeartbeatLed_();
@@ -123,7 +232,7 @@ void InverterProtocol::fillPacket(tiny_gea_packet_t* pkt) {
   // F020
   put_u16_be(p, ERD_F020); p += 2;
   *p++ = F020_LEN;
-  memcpy(p, f020_.raw, F020_LEN);
+  memcpy(p, f020_, F020_LEN);
   p += F020_LEN;
 
   // F023
@@ -149,6 +258,8 @@ void InverterProtocol::onPacketStatic(void* ctx, const void* args) {
 
 void InverterProtocol::onPacket(const tiny_gea_interface_on_receive_args_t* rx) {
   if (!rx || !rx->packet) return;
+  last_rx_ms_ = millis();
+  telem_dirty_ = true;
   handleB8(rx->packet);
 }
 

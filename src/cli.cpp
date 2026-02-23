@@ -319,18 +319,21 @@ void Cli::applyDriveAndSend() {
 
   inv_->setEnabled(true);
 
+  // Inverter expects a run byte in F020: 0x02=stopped, 0x04=running
+  inv_->setRun(drive_running_);
+
   // accel is always "commanded" in drive mode
   inv_->setAccel((uint16_t)clamp_u32((int64_t)drive_accel_, 0, 65535));
 
-  // speed is commanded; stop forces 0 (you can change this later if needed)
-  int32_t signed_speed = 0;
+  // speed is commanded; when STOPPED we send 0xFFFF (sentinel) to match inverter expectation
+  int32_t signed_speed;
   if (drive_running_) {
-    signed_speed = drive_speed_ * (int32_t)drive_dir_;
+    signed_speed = (int32_t)drive_speed_ * (int32_t)drive_dir_;
+    signed_speed = clamp_i32(signed_speed, -16000, 16000);
+    inv_->setSpeedSigned((int16_t)signed_speed);
   } else {
-    signed_speed = 0;
+    inv_->setSpeedSigned((int16_t)-1); // 0xFFFF
   }
-  signed_speed = clamp_i32(signed_speed, -32768, 32767);
-  inv_->setSpeedSigned((int16_t)signed_speed);
 
   inv_->sendOnce();
 
@@ -345,7 +348,7 @@ void Cli::startDrive() {
   drive_running_ = false;
   drive_dir_ = +1;
   drive_speed_ = 0;
-  drive_accel_ = 0;
+  drive_accel_ = 0xFFFF;
   drive_last_speed_ = 0;
   esc_state_ = 0;
 
@@ -367,7 +370,9 @@ void Cli::stopDrive(bool restore_ff) {
   drive_dashboard_drawn_ = false;
 
   if (restore_ff) {
-    inv_->setF020AllFF();
+    // Restore inverter-expected idle payload (stopped + FFs)
+    inv_->setRun(false);
+    inv_->setF020DefaultsStopped();
     inv_->sendOnce();
   }
 
@@ -389,13 +394,13 @@ void Cli::runDriveKey(int c) {
     esc_state_ = 0;
 
     if (c == 'A') { // Up: speed +
-      drive_speed_ = clamp_i32((int64_t)drive_speed_ + SPEED_STEP, 0, 32767);
+      drive_speed_ = clamp_i32((int64_t)drive_speed_ + SPEED_STEP, 0, 16000);
       drive_last_speed_ = drive_speed_;
       applyDriveAndSend();
       return;
     }
     if (c == 'B') { // Down: speed -
-      drive_speed_ = clamp_i32((int64_t)drive_speed_ - SPEED_STEP, 0, 32767);
+      drive_speed_ = clamp_i32((int64_t)drive_speed_ - SPEED_STEP, 0, 16000);
       drive_last_speed_ = drive_speed_;
       applyDriveAndSend();
       return;
@@ -593,6 +598,20 @@ void Cli::run() {
   // If sniffing, keep draining TX capture continuously
   if (sniffing_) {
     runSniff();
+  }
+
+  // Drive mode: update dashboard on RX even without keyboard input,
+  // and exit on comm-fault (no inverter responses).
+  if (driving_) {
+    if (inv_->consumeTelemetryUpdated()) {
+      drawDriveDashboard(false);
+    }
+    // If inverter stops responding, bail out so you don't keep driving blind.
+    if (inv_->msSinceLastRx() > 2000) {
+      io_->print("\r\nERROR: Communication fault with inverter (no status RX). Exiting drive mode.\r\n");
+      stopDrive(true /*restore_ff*/);
+      return;
+    }
   }
 
   while (io_->available()) {

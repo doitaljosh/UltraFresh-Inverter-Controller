@@ -9,10 +9,7 @@ extern "C" {
 #include "tiny_gea_packet.h"
 #include "tiny_event_subscription.h"
 #include "hal/i_tiny_uart.h"
-
-// Only needed because your main.cpp passes a tiny_timer_group_t*.
-// We accept it but do not use it (your tiny-gea-api build doesn't need it).
-#include "tiny_timer.h"
+#include "tiny_timer.h" // for tiny_timer_group_t* signature compatibility
 }
 
 class InverterProtocol {
@@ -30,7 +27,7 @@ public:
   // Heartbeat LED indicator (toggles on each F026 increment)
   void enableHeartbeatLed(bool enable, int pin = 2, bool active_high = true);
 
-  // Keep this signature to match your existing main.cpp call:
+  // Keep this signature to match main.cpp usage:
   // inverter.begin(&timers, inv_uart_adapter->iface(), SRC_ADDR, DST_ADDR);
   void begin(tiny_timer_group_t* timers, i_tiny_uart_t* uart, uint8_t src_addr, uint8_t dst_addr);
 
@@ -48,17 +45,47 @@ public:
   void setF023(uint8_t v) { f023_ = v; }
   void setF213(uint8_t v) { f213_ = v; }
 
-  void setState(uint8_t v)        { f020_.fields.state = v; }
-  void setProfile(uint8_t v)      { f020_.fields.profile = v; }
-  void setUnknownU16(uint16_t v)  { f020_.fields.unknown_u16 = v; }
-  void setAccel(uint16_t v)       { f020_.fields.accel_u16 = v; }
-  void setSpeedSigned(int16_t v)  { f020_.fields.speed_s16 = v; }
+  // -----------------------------
+  // F020 payload layout (0x58 bytes) - per your capture
+  //
+  //  [0] run/state byte: 0x02=stopped, 0x04=running
+  //  [1] change counter: increments when ANY OTHER byte in F020 changes
+  //  [2] FF
+  //  [3] FF
+  //  [4..5] accel u16 BE   (payload bytes 5-6, 1-based)
+  //  [6..7] speed s16 BE   (payload bytes 7-8, 1-based)
+  //  [8..0x57] FF (unless you explicitly write more)
+  // -----------------------------
 
+  // Legacy command names (keep CLI stable)
+  void setState(uint8_t v)   { setRunByte(v); } // expects 0x02 or 0x04
+  void setProfile(uint8_t)   {}                 // unused with the corrected mapping
+  void setUnknownU16(uint16_t) {}               // unused with the corrected mapping
+
+  void setRun(bool running);
+  void setRunByte(uint8_t v);        // 0x02 or 0x04
+
+  void setAccel(uint16_t accel_u16); // BE u16
+  void setSpeedSigned(int16_t speed_s16); // BE s16
+
+  // Param words starting at byte 8 (index 0 -> bytes 8..9), BE
   bool setParam(uint8_t index, uint16_t value);
 
+  // Set any F020 byte except counter byte [1]. If changed, counter increments.
+  bool setF020Byte(uint8_t index, uint8_t value);
+
+  // Reset to inverter-expected "stopped defaults":
+  // byte0=0x02, byte2..end=0xFF, accel/speed = 0xFFFF, counter preserved+incremented if anything changes
+  void setF020DefaultsStopped();
+
+  // Force all bytes to 0xFF (generally NOT recommended for byte0/byte1)
   void setF020AllFF();
 
   Telemetry telemetry() const { return telem_; }
+
+  // Telemetry update tracking
+  bool consumeTelemetryUpdated();
+  uint32_t msSinceLastRx() const;
 
 private:
   static constexpr uint8_t ERDCMD_INVERTER = 0xB8;
@@ -74,35 +101,18 @@ private:
 
   static constexpr uint8_t F020_LEN = 0x58;
 
-  struct __attribute__((packed)) F020Fields {
-    uint8_t  state;
-    uint8_t  profile;
-    uint16_t unknown_u16;
-    uint16_t accel_u16;
-    int16_t  speed_s16;
-    uint16_t params[36];
-    uint16_t reserved[4];
-  };
-
-  union F020Payload {
-    F020Fields fields;
-    uint8_t raw[F020_LEN];
-  };
-
+  // Heartbeat LED
   bool hb_led_enabled_ = false;
   int hb_led_pin_ = 2;
   bool hb_led_active_high_ = true;
   bool hb_led_state_ = false;
-
-void toggleHeartbeatLed_();
+  void toggleHeartbeatLed_();
 
   tiny_gea3_interface_t gea3_{};
   tiny_event_subscription_t rx_sub_{};
 
   static constexpr size_t SEND_Q_SIZE = 512;
-
-  // IMPORTANT: rx length argument is uint8_t in your tiny-gea-api build => must be <=255
-  static constexpr uint8_t RX_BUF_SIZE = 255;
+  static constexpr uint8_t RX_BUF_SIZE = 255; // tiny-gea-api build uses uint8_t length
 
   uint8_t send_q_[SEND_Q_SIZE]{};
   uint8_t rx_buf_[RX_BUF_SIZE]{};
@@ -114,20 +124,28 @@ void toggleHeartbeatLed_();
   uint32_t last_500ms_ms_ = 0;
   uint32_t last_1s_ms_ = 0;
 
-  F020Payload f020_{};
-  uint8_t f023_ = 0xFF;
+  uint8_t f020_[F020_LEN]{};
+  uint8_t f023_ = 0x00;
   uint8_t f026_ = 0x00;
-  uint8_t f213_ = 0xFF;
+  uint8_t f213_ = 0x00;
 
   Telemetry telem_{};
 
+  // RX tracking
+  volatile bool telem_dirty_ = false;
+  uint32_t last_rx_ms_ = 0;
+
+  // Packet events
   static void onPacketStatic(void* ctx, const void* args);
   void onPacket(const tiny_gea_interface_on_receive_args_t* rx);
-
   void handleB8(const tiny_gea_packet_t* pkt);
 
+  // Send callback
   static void fillPacketStatic(void* ctx, tiny_gea_packet_t* pkt);
   void fillPacket(tiny_gea_packet_t* pkt);
+
+  // F020 mutation helper: increments counter once if any byte except [1] changes
+  void updateF020Range_(uint8_t index, const uint8_t* data, size_t len);
 
   static inline void put_u16_be(uint8_t* p, uint16_t v) {
     p[0] = (uint8_t)((v >> 8) & 0xFF);
