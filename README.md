@@ -80,23 +80,23 @@ F24E – DC Bus Voltage
 
 General Commands:
 
-help  
-show  
-addr src dst  
-send  
-enable 1  
-enable 0  
+`help` 
+`show`
+`addr src dst`  
+`send`
+`enable 1`
+`enable 0`
 
 ERD Configuration Commands:
 
-f023 <u8>  
-f213 <u8>  
-state <u8>  
-profile <u8>  
-accel <u16>  
-speed <s16>  
-param <0-35> <u16>  
-allff  
+`f023 <u8>`
+`f213 <u8>`
+`state <u8>`  
+`profile <u8>`  
+`accel <u16>`  
+`speed <s16>`  
+`param <0-35> <u16>`  
+`allff`  
 
 Values accept decimal or 0xHEX.
 
@@ -106,7 +106,7 @@ Values accept decimal or 0xHEX.
 
 Enter:
 
-drive
+`drive`
 
 Keyboard Controls:
 
@@ -129,7 +129,7 @@ drive: RUN | dir=CW | speed=1500 | accel=2000
 
 Enter:
 
-frames
+`frames`
 
 Example Output:
 
