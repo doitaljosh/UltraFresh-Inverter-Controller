@@ -121,6 +121,7 @@ Ctrl+C      → Exit drive mode and reset F020 to all 0xFF
 Example Output:
 
 Temp: 102.45°F  Current: 18  DCBus_V: 326V
+
 drive: RUN | dir=CW | speed=1500 | accel=2000
 
 ---
