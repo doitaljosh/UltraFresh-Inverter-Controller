@@ -348,7 +348,7 @@ void Cli::startDrive() {
   drive_running_ = false;
   drive_dir_ = +1;
   drive_speed_ = 0;
-  drive_accel_ = 0xFFFF;
+  drive_accel_ = 1000;
   drive_last_speed_ = 0;
   esc_state_ = 0;
 
@@ -607,7 +607,7 @@ void Cli::run() {
       drawDriveDashboard(false);
     }
     // If inverter stops responding, bail out so you don't keep driving blind.
-    if (inv_->msSinceLastRx() > 2000) {
+    if (inv_->msSinceLastRx() > 10000) {
       io_->print("\r\nERROR: Communication fault with inverter (no status RX). Exiting drive mode.\r\n");
       stopDrive(true /*restore_ff*/);
       return;

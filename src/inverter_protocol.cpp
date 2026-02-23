@@ -7,7 +7,7 @@ InverterProtocol::InverterProtocol() {
   f020_[1] = 0x00; // change counter
 
   f023_ = 0x00;
-  f213_ = 0x00;
+  f213_ = 0x02;
   f026_ = 0x00;
 }
 
