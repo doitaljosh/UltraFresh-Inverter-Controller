@@ -18,7 +18,7 @@ public:
     bool valid = false;
     uint8_t  f219_flags[6] = {0};
     uint16_t temp_f_x100 = 0;     // °F * 100
-    uint16_t stator_current = 0;  // raw units
+    uint16_t stator_current = 0;  // mA
     uint16_t vbus = 0;            // V
   };
 

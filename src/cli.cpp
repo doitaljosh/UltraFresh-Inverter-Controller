@@ -569,7 +569,7 @@ void Cli::handleLine(const char* s) {
   if (strcmp(cmd, "show") == 0) {
     auto t = inv_->telemetry();
     if (t.valid) {
-      io_->printf("Telemetry: Temp=%.2f*F  Current=%u  Vbus=%uV\r\n",
+      io_->printf("Telemetry: Temp=%.2f*F  Current=%umA  Vbus=%uV\r\n",
                   (double)t.temp_f_x100 / 100.0,
                   (unsigned)t.stator_current,
                   (unsigned)t.vbus);
