@@ -117,7 +117,7 @@ private:
   uint8_t send_q_[SEND_Q_SIZE]{};
   uint8_t rx_buf_[RX_BUF_SIZE]{};
 
-  uint8_t src_addr_ = 0x70;
+  uint8_t src_addr_ = 0xC0;
   uint8_t dst_addr_ = 0x3F;
 
   bool enabled_ = false;
