@@ -293,7 +293,7 @@ void Cli::drawDriveDashboard(bool first_draw) {
 
   auto t = inv_->telemetry();
   if (t.valid) {
-    io_->printf("Temp: %.2f*F  Current: %u  DCBus_V: %uV",
+    io_->printf("Temp: %.2f*F  Current: %umA  DCBus_V: %uV",
                 (double)t.temp_f_x100 / 100.0,
                 (unsigned)t.stator_current,
                 (unsigned)t.vbus);
